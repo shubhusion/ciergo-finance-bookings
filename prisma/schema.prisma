@@ -7,18 +7,20 @@
 //    ledgers. Cross-currency conversion is out of scope for Round 1 (see README).
 //  * The Bookings / Waiting-for-Approval / Deleted tabs are *queries*, not a
 //    column: an approved booking legitimately appears in two tabs at once.
-//  * Prisma does not support native enums on SQLite, so the enumerated columns
-//    are String. The permitted values live in src/lib/types.ts and are enforced
-//    at the API boundary by zod, so invalid values can't reach the database.
-//    Switching the datasource to PostgreSQL later is a mechanical change.
+//  * Enumerated columns are String rather than native Postgres enums — the
+//    permitted values live in src/lib/types.ts and are enforced at the API
+//    boundary by zod, so invalid values can't reach the database, and the
+//    values stay identical to when this ran on SQLite (which has no enum
+//    support), so no data migration was needed to switch datasources.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
