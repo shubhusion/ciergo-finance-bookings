@@ -13,13 +13,15 @@ where they would have to live once the table is longer than one page.
 
 ```bash
 cp .env.example .env
+# fill in DATABASE_URL / DATABASE_URL_UNPOOLED with a Postgres connection
+# string — a free Neon project (neon.tech) works, or Vercel Postgres/Supabase
 npm install
 npm run setup     # prisma generate + db push + seed
 npm run dev       # http://localhost:3000/finance/bookings
 ```
 
-Requires Node 18.18+. The database is SQLite and is created on the spot — no
-Docker, no connection string to configure.
+Requires Node 18.18+ and a reachable Postgres database (the app itself needs
+no other infrastructure — no Docker, no separate services).
 
 To reseed at any point: `npm run db:reset`.
 
@@ -30,7 +32,7 @@ To reseed at any point: `npm run db:reset`.
 | Choice | Reason |
 | --- | --- |
 | **Next.js 15 (App Router)** | The JD asks for Next.js + Node. Route handlers *are* the Node backend — they run server-side and hold all the business logic. A separate Express service would add CORS, a second process and a second deploy to ship one page. |
-| **Prisma + SQLite** | The reviewer clones and runs, with zero infrastructure. Swapping to PostgreSQL is a two-line datasource change. |
+| **Prisma + Postgres (Neon)** | Started on SQLite for zero-infra local review; moved to Neon Postgres to deploy on Vercel, whose serverless functions can't persist a local SQLite file. The switch was exactly the two-line datasource change the schema was already set up for. |
 | **zod** | One schema validates the query string and types it. Bad input is a 422, not a crash. |
 | **Tailwind** | Fastest route to matching a Figma closely without inventing a design system. |
 
