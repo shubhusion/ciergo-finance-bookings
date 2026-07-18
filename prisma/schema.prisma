@@ -1,0 +1,206 @@
+// Finance – Bookings, Round 1.
+//
+// Design notes:
+//  * Money is stored as integer minor units (paise) and never as Float.
+//  * `currency` lives on the booking rather than as a hardcoded symbol, because
+//    the spec writes "<Default Currency Sign>" and the JD calls out multi-currency
+//    ledgers. Cross-currency conversion is out of scope for Round 1 (see README).
+//  * The Bookings / Waiting-for-Approval / Deleted tabs are *queries*, not a
+//    column: an approved booking legitimately appears in two tabs at once.
+//  * Prisma does not support native enums on SQLite, so the enumerated columns
+//    are String. The permitted values live in src/lib/types.ts and are enforced
+//    at the API boundary by zod, so invalid values can't reach the database.
+//    Switching the datasource to PostgreSQL later is a mechanical change.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String @id
+  name       String
+  initials   String
+  colorToken String
+  /// Display title shown in the topbar (e.g. "Sales Lead") — distinct from
+  /// `role`, which is the permission level, not a job title.
+  jobTitle   String?
+  /// ADMIN | MANAGER | MEMBER
+  role       String @default("MEMBER")
+
+  /// Can open the Waiting for Approval tab and see every pending booking.
+  canViewAllApprovals Boolean @default(false)
+
+  ownedBookings   BookingOwner[]
+  createdBookings Booking[]       @relation("createdBy")
+  approvalsMade   ApprovalEvent[] @relation("actor")
+
+  /// Rows where this user is the approver.
+  approvesFor ApprovalRight[] @relation("approver")
+  /// Rows where this user is the one being approved.
+  approvedBy  ApprovalRight[] @relation("subject")
+}
+
+/// "Users who can approve others' bookings" — an explicit edge rather than a
+/// boolean, because the spec scopes approval to *a certain user's* bookings.
+model ApprovalRight {
+  id         String @id @default(cuid())
+  approverId String
+  subjectId  String
+
+  approver User @relation("approver", fields: [approverId], references: [id], onDelete: Cascade)
+  subject  User @relation("subject", fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([approverId, subjectId])
+  @@index([subjectId])
+}
+
+model Booking {
+  id      String @id
+  leadPax String
+
+  bookingDate DateTime
+  travelDate  DateTime
+
+  /// FLIGHT | ACCOMMODATION | TRANSPORT_LAND | TRANSPORT_AIR | TICKET_ATTRACTION
+  /// | ACTIVITY | VISA | TRAVEL_INSURANCE | OTHERS | LIMITLESS
+  service          String
+  /// Only populated for LIMITLESS bookings (the "UAE / Explore UAE" cell).
+  limitlessName    String?
+  limitlessCountry String?
+
+  /// CONFIRMED | PENDING | CANCELLED
+  bookingStatus String @default("CONFIRMED")
+
+  amount   Int
+  currency String @default("INR")
+
+  /// Drives the "Show Incomplete Bookings" toggle.
+  isComplete Boolean @default(true)
+
+  requiresApproval Boolean @default(false)
+  /// PENDING | APPROVED | REJECTED — null when approval doesn't apply.
+  approvalState    String?
+
+  createdById String
+  createdBy   User   @relation("createdBy", fields: [createdById], references: [id])
+
+  /// Soft delete — the Deleted tab restores from here.
+  deletedAt DateTime?
+
+  createdAt  DateTime @default(now())
+  modifiedAt DateTime @updatedAt
+
+  owners         BookingOwner[]
+  payments       Payment[]
+  documents      BookingDocument[]
+  tasks          Task[]
+  approvalEvents ApprovalEvent[]
+  linksFrom      BookingLink[]     @relation("from")
+  linksTo        BookingLink[]     @relation("to")
+
+  @@index([deletedAt, requiresApproval, approvalState])
+  @@index([modifiedAt])
+  @@index([travelDate])
+}
+
+model BookingOwner {
+  bookingId String
+  userId    String
+  /// PRIMARY | SECONDARY
+  role      String @default("PRIMARY")
+  position  Int    @default(0)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([bookingId, userId])
+  @@index([userId])
+}
+
+/// Every pending row here is one line of the You Give / You Get pills.
+model Payment {
+  id        String @id @default(cuid())
+  bookingId String
+  /// CUSTOMER | VENDOR
+  party     String
+  /// INBOUND  = money flowing to the agency (customer payment, vendor refund)
+  /// OUTBOUND = money leaving the agency (vendor payment, customer refund)
+  direction String
+  /// A refund is a payment in the non-obvious direction for its party:
+  /// OUTBOUND+CUSTOMER and INBOUND+VENDOR are both refunds.
+  isRefund  Boolean @default(false)
+
+  amount   Int
+  currency String @default("INR")
+
+  /// Settled = money has actually moved. Unsettled + approved = pending.
+  settled   Boolean   @default(false)
+  settledAt DateTime?
+  /// "payments not yet approved will not be considered here"
+  isApproved Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([settled, isApproved])
+}
+
+model BookingDocument {
+  id        String @id @default(cuid())
+  bookingId String
+  /// BOOKING_VOUCHER | CUSTOMER_INVOICE | VENDOR_VOUCHER | VENDOR_INVOICE
+  kind      String
+  label     String
+  url       String
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+}
+
+model Task {
+  id        String    @id @default(cuid())
+  bookingId String
+  title     String
+  done      Boolean   @default(false)
+  dueAt     DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+}
+
+model BookingLink {
+  id     String @id @default(cuid())
+  fromId String
+  toId   String
+
+  from Booking @relation("from", fields: [fromId], references: [id], onDelete: Cascade)
+  to   Booking @relation("to", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId])
+}
+
+/// Audit trail. The spec allows a rejected booking to be resubmitted, so the
+/// approval history is a log rather than a single mutable field.
+model ApprovalEvent {
+  id        String   @id @default(cuid())
+  bookingId String
+  actorId   String
+  /// PENDING | APPROVED | REJECTED
+  state     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  actor   User    @relation("actor", fields: [actorId], references: [id])
+
+  @@index([bookingId])
+}
